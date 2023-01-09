@@ -1,0 +1,40 @@
+(before execution you need to create bucket (my-bucket), zip-file which contains your lambda function and  start terminal in this folder)
+aws --endpoint-url=http://localhost:4566 s3api create-bucket --bucket my-bucket
+
+aws iam create-policy --policy-name my-pol --policy-document file://pol.txt --endpoint-url http://localhost:4566
+
+aws iam create-role --role-name lambda-s3-role --assume-role-policy-document "{"Version": "2012-10-17","Statement": [{ "Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}"  --endpoint-url http://localhost:4566
+
+aws iam attach-role-policy --policy-arn arn:aws:iam::000000000000:policy/my-pol --role-name lambda-s3-role --endpoint-url http://localhost:4566
+
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name my-queue
+
+
+export UPLOAD_FILE_EVENT_SQS=my-queue
+
+export BUCKET_NAME=my-bucket
+
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name  $UPLOAD_FILE_EVENT_SQS
+
+
+export UPLOAD_FILE_EVENT_SQS_ARN=$(aws --endpoint-url=http://localhost:4566 sqs get-queue-attributes\
+                  --attribute-name QueueArn --queue-url=http://localhost:4566/000000000000/"$UPLOAD_FILE_EVENT_SQS"\
+                  |  sed 's/"QueueArn"/\n"QueueArn"/g' | grep '"QueueArn"' | awk -F '"QueueArn":' '{print $2}' | tr -d '"' | xargs)
+
+aws --endpoint-url=http://localhost:4566 s3api put-bucket-notification-configuration\
+    --bucket $BUCKET_NAME\
+    --notification-configuration  '{
+                                      "QueueConfigurations": [
+                                         {
+                                           "QueueArn": "'"$UPLOAD_FILE_EVENT_SQS_ARN"'",
+                                           "Events": ["s3:ObjectCreated:*"]
+                                         } ]
+                                     }'
+
+#lets check our sqs and add random file to my-bucket from current folder and the message from sqs
+aws s3 cp pol.txt s3://my-bucket --endpoint-url http://localhost:4566
+aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url=http://localhost:4566/000000000000/my-queue
+
+aws lambda create-function --function-name lambda --zip-file fileb://lambda.zip --handler lambda_test.lambda_handler --runtime python3.8 --role arn:aws:iam::000000000000:role/lambda-s3-role --endpoint-url http://localhost:4566
+
+aws lambda create-event-source-mapping --function-name lambda --batch-size 5 --maximum-batching-window-in-seconds 60  --event-source-arn arn:aws:sqs:us-east-1:000000000000:my-queue --endpoint-url http://localhost:4566
